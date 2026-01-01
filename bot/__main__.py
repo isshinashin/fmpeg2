@@ -260,7 +260,52 @@ async def something():
 
 ########### Start ############
 
-LOGS.info("Bot has started.")
-with bot:
-    bot.loop.run_until_complete(something())
-    bot.loop.run_forever()
+# Async startup: webserver for Render health checks + Telethon bot start + background worker
+import os
+import asyncio
+from aiohttp import web
+
+LOGS.info("Preparing to start...")
+
+async def start_webserver(port: int):
+    async def health(request):
+        return web.Response(text="ok")
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    LOGS.info(f"Webserver listening on 0.0.0.0:{port}")
+
+async def main():
+    port = int(os.environ.get("PORT", 8080))
+    # start webserver (satisfies Render health checks)
+    await start_webserver(port)
+
+    # start the Telethon bot (use bot_token if using bot account)
+    try:
+        await bot.start(bot_token=BOT_TOKEN)
+    except Exception as e:
+        LOGS.info(f"Failed to start bot with token: {e}")
+        # try to start without bot_token if the repo uses a user session
+        try:
+            await bot.start()
+        except Exception as e2:
+            LOGS.info(f"Failed to start bot: {e2}")
+            raise
+
+    LOGS.info("Bot started.")
+
+    # schedule the background worker
+    bot.loop.create_task(something())
+
+    # run until the client disconnects
+    await bot.run_until_disconnected()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        LOGS.info("Shutting down...")
